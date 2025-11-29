@@ -9,20 +9,11 @@ import zipfile
 from datetime import datetime
 from xml.sax.saxutils import escape
 def run_exiftool_json(image_dir):
-    cmd = [
-        "exiftool", "-json", "-n",
-        "-FileName", "-SourceFile",
-        "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
-        "-DateTimeOriginal",
-        "-r", image_dir
-    ]
+    cmd = ["exiftool", "-json", "-n", "-FileName", "-SourceFile", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-DateTimeOriginal", "-r", image_dir]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "exiftool failed")
-    try:
-        return json.loads(proc.stdout)
-    except Exception as e:
-        raise RuntimeError("Failed to parse exiftool JSON output") from e
+    return json.loads(proc.stdout)
 def parse_dt(dt_str, candidate_path):
     if not dt_str:
         try:
@@ -83,35 +74,27 @@ def main():
         src = item.get("SourceFile") or item.get("FileName")
         if not src:
             continue
-        gpslat = item.get("GPSLatitude")
-        gpslon = item.get("GPSLongitude")
-        if gpslat is None or gpslon is None:
-            skipped.append(src)
-            continue
-        try:
-            lat = float(gpslat)
-            lon = float(gpslon)
-        except Exception:
-            skipped.append(src)
-            continue
-        alt = item.get("GPSAltitude")
-        alt_val = float(alt) if (alt is not None) else None
         if not os.path.isabs(src):
             candidate = os.path.join(image_dir, src)
         else:
             candidate = src
         if not os.path.exists(candidate):
             candidate = os.path.join(image_dir, os.path.basename(src))
+        gpslat = item.get("GPSLatitude")
+        gpslon = item.get("GPSLongitude")
+        if gpslat is None or gpslon is None:
+            skipped.append(candidate if candidate and os.path.exists(candidate) else src)
+            continue
+        try:
+            lat = float(gpslat)
+            lon = float(gpslon)
+        except Exception:
+            skipped.append(candidate if candidate and os.path.exists(candidate) else src)
+            continue
+        alt = item.get("GPSAltitude")
+        alt_val = float(alt) if (alt is not None) else None
         dt = parse_dt(item.get("DateTimeOriginal"), candidate)
-        items.append({
-            "srcpath": src,
-            "lon": lon,
-            "lat": lat,
-            "alt": alt_val,
-            "dt": dt,
-            "candidate": candidate,
-            "description": f"Source file: {os.path.basename(src)}"
-        })
+        items.append({"srcpath": src, "lon": lon, "lat": lat, "alt": alt_val, "dt": dt, "candidate": candidate})
     if not items:
         print("No geotagged images found.")
         if skipped:
@@ -126,16 +109,26 @@ def main():
         files_dir = os.path.join(tmp, "files")
         os.makedirs(files_dir, exist_ok=True)
         for p in items:
-            src = p['srcpath']
-            dst = os.path.join(files_dir, os.path.basename(src))
             candidate = p['candidate']
+            dst = os.path.join(files_dir, os.path.basename(candidate))
             if not os.path.exists(candidate):
-                print("Warning: could not find file to copy:", src)
+                print("Warning: could not find file to copy:", candidate)
                 continue
             shutil.copy2(candidate, dst)
         kml_path = os.path.join(tmp, "doc.kml")
         with open(kml_path, "w", encoding="utf-8") as f:
             f.write(kml_text)
+        out_dir = os.path.dirname(out_kmz) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        no_gps_dir = os.path.join(out_dir, "no_gps")
+        if skipped:
+            os.makedirs(no_gps_dir, exist_ok=True)
+            for s in skipped:
+                try:
+                    if os.path.exists(s):
+                        shutil.copy2(s, os.path.join(no_gps_dir, os.path.basename(s)))
+                except Exception:
+                    pass
         with zipfile.ZipFile(out_kmz, "w", zipfile.ZIP_DEFLATED) as kmz:
             kmz.write(kml_path, arcname="doc.kml")
             for root, _, files in os.walk(files_dir):
@@ -145,7 +138,7 @@ def main():
                     kmz.write(full, arcname=rel)
         print("KMZ created:", out_kmz)
         if skipped:
-            print(f"Skipped {len(skipped)} files (no GPS).")
+            print("Copied", len(skipped), "files without GPS to", no_gps_dir)
     finally:
         shutil.rmtree(tmp)
 if __name__ == "__main__":
