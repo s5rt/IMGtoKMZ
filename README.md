@@ -30,6 +30,7 @@
     ```bash
   brew install exiftool
     ```
+- **Windows / Linux** — the Windows script variant uses magick (ImageMagick) or ffmpeg for HEIC conversion. If you use the macOS script on Windows, replace the conversion step or use the provided Windows variant.
 - Python 3.8+ (uses standard library only).
 ---
 # Usage
