@@ -44,7 +44,7 @@ def make_kml(placemarks):
     header = f'''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>Photos {escape(now)}</name>
+    <name>locn</name>
     <open>1</open>
 '''
     body = ""
