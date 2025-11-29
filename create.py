@@ -109,7 +109,8 @@ def main():
             "lat": lat,
             "alt": alt_val,
             "dt": dt,
-            "candidate": candidate
+            "candidate": candidate,
+            "description": f"Source file: {os.path.basename(src)}"
         })
     if not items:
         print("No geotagged images found.")
