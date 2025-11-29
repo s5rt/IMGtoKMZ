@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-# python3 create.py ./photos/ kmz/my_photos.kmz [--tour]
+# python3 create.py IMAGEDIR [OUTPUT.kmz] [--tour]
 import json, os, shutil, subprocess, sys, tempfile, zipfile, csv
 from datetime import datetime
 from xml.sax.saxutils import escape
 def convert_heic_to_jpeg(src, workdir):
     base = os.path.basename(src)
     out_jpg = os.path.join(workdir, os.path.splitext(base)[0] + ".jpg")
-    subprocess.run(["sips", "-s", "format", "jpeg", src, "--out", out_jpg],
-                   capture_output=True)
-    subprocess.run(["exiftool", "-overwrite_original", "-tagsFromFile", src, out_jpg],
-                   capture_output=True)
+    subprocess.run(["sips", "-s", "format", "jpeg", src, "--out", out_jpg], capture_output=True)
+    subprocess.run(["exiftool", "-overwrite_original", "-tagsFromFile", src, out_jpg], capture_output=True)
     return out_jpg
 def normalize_image(src, workdir):
     ext = os.path.splitext(src.lower())[1]
@@ -30,7 +28,7 @@ def parse_dt(dt_str, src):
             return datetime.utcfromtimestamp(os.path.getmtime(src))
         except Exception:
             return None
-    for fmt in ("%Y:%m:%d %H:%M:%S","%Y-%m-%dT%H:%M:%S","%Y:%m:%d"):
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y:%m:%d"):
         try:
             return datetime.strptime(dt_str, fmt)
         except Exception:
@@ -109,85 +107,86 @@ def main():
     if not os.path.isdir(image_dir):
         print("Error: directory not found:", image_dir)
         sys.exit(1)
+    allowed_exts = {".jpg", ".jpeg", ".png", ".heic"}
     convert_dir = tempfile.mkdtemp(prefix="heicfix_")
-    data = run_exiftool_json(image_dir)
-    items = []
-    skipped = []
-    for item in data:
-        src = item.get("SourceFile") or item.get("FileName")
-        if not src:
-            continue
-        if not os.path.isabs(src):
-            candidate = os.path.join(image_dir, src)
-        else:
-            candidate = src
-        if not os.path.exists(candidate):
-            candidate = os.path.join(image_dir, os.path.basename(src))
-        norm = normalize_image(candidate, convert_dir)
-        gpslat = item.get("GPSLatitude")
-        gpslon = item.get("GPSLongitude")
-        if gpslat is None or gpslon is None:
-            skipped.append(norm)
-            continue
-        try:
-            lat = float(gpslat); lon = float(gpslon)
-        except Exception:
-            skipped.append(norm)
-            continue
-        alt = item.get("GPSAltitude")
-        alt_val = float(alt) if alt is not None else None
-        dt = parse_dt(item.get("DateTimeOriginal"), norm)
-        items.append({
-            "src": norm,
-            "lon": lon, "lat": lat, "alt": alt_val, "dt": dt
-        })
-    if not items and not skipped:
-        print("No images found.")
-        sys.exit(1)
-    items.sort(key=lambda x: (x['dt'] is None,
-                              x['dt'] or datetime.utcfromtimestamp(0)))
-    for i, p in enumerate(items, start=1):
-        p['kname'] = f"p{i}"
-    kml_items = list(reversed(items))
     tmp = tempfile.mkdtemp(prefix="kmz_")
     try:
+        raw_list = run_exiftool_json(image_dir)
+        items = []
+        skipped = []
+        nonfiles = []
+        for item in raw_list:
+            src = item.get("SourceFile") or item.get("FileName")
+            if not src:
+                continue
+            candidate = src if os.path.isabs(src) else os.path.join(image_dir, src)
+            if not os.path.exists(candidate):
+                candidate = os.path.join(image_dir, os.path.basename(src))
+            ext = os.path.splitext(candidate.lower())[1]
+            if ext not in allowed_exts:
+                nonfiles.append(candidate)
+                continue
+            norm = normalize_image(candidate, convert_dir)
+            gpslat = item.get("GPSLatitude"); gpslon = item.get("GPSLongitude")
+            if gpslat is None or gpslon is None:
+                skipped.append(norm)
+                continue
+            try:
+                lat = float(gpslat); lon = float(gpslon)
+            except Exception:
+                skipped.append(norm)
+                continue
+            alt = item.get("GPSAltitude"); alt_val = float(alt) if alt is not None else None
+            dt = parse_dt(item.get("DateTimeOriginal"), norm)
+            items.append({"src": norm, "lon": lon, "lat": lat, "alt": alt_val, "dt": dt})
+        if not items and not skipped:
+            print("No images found.")
+            sys.exit(1)
+        items.sort(key=lambda x: (x['dt'] is None, x['dt'] or datetime.utcfromtimestamp(0)))
+        for i, p in enumerate(items, start=1):
+            p['kname'] = f"p{i}"
+        kml_items = list(reversed(items))
         files_dir = os.path.join(tmp, "files")
         os.makedirs(files_dir, exist_ok=True)
         for p in items:
             dst = os.path.join(files_dir, os.path.basename(p['src']))
             shutil.copy2(p['src'], dst)
             p['kimg'] = "files/" + os.path.basename(p['src'])
-        kml_text = make_kml(
-            kml_items,
-            os.path.splitext(os.path.basename(out_kmz))[0],
-            include_tour
-        )
-        with open(os.path.join(tmp, "doc.kml"), "w", encoding="utf-8") as f:
+        kml_text = make_kml(kml_items, os.path.splitext(os.path.basename(out_kmz))[0], include_tour)
+        kml_path = os.path.join(tmp, "doc.kml")
+        with open(kml_path, "w", encoding="utf-8") as f:
             f.write(kml_text)
         out_dir = os.path.dirname(out_kmz) or "."
         os.makedirs(out_dir, exist_ok=True)
-        ng = os.path.join(out_dir, "no_gps")
+        no_gps_dir = os.path.join(out_dir, "no_gps")
         if skipped:
-            os.makedirs(ng, exist_ok=True)
+            os.makedirs(no_gps_dir, exist_ok=True)
             for s in skipped:
                 if os.path.exists(s):
-                    shutil.copy2(s, os.path.join(ng, os.path.basename(s)))
+                    shutil.copy2(s, os.path.join(no_gps_dir, os.path.basename(s)))
+        non_file_dir = os.path.join(out_dir, "non_file")
+        if nonfiles:
+            os.makedirs(non_file_dir, exist_ok=True)
+            for nf in nonfiles:
+                if os.path.exists(nf):
+                    try:
+                        shutil.copy2(nf, os.path.join(non_file_dir, os.path.basename(nf)))
+                    except Exception:
+                        pass
         with zipfile.ZipFile(out_kmz, "w", zipfile.ZIP_DEFLATED) as kmz:
-            kmz.write(os.path.join(tmp, "doc.kml"), "doc.kml")
+            kmz.write(kml_path, arcname="doc.kml")
             for root, _, files in os.walk(files_dir):
                 for fn in files:
                     full = os.path.join(root, fn)
                     kmz.write(full, arcname=os.path.relpath(full, tmp))
-        csv_path = os.path.join(
-            out_dir,
-            os.path.splitext(os.path.basename(out_kmz))[0] + "_report.csv"
-        )
+        csv_path = os.path.join(out_dir, os.path.splitext(os.path.basename(out_kmz))[0] + "_report.csv")
         rows = []
         for p in items:
-            rows.append((p['kname'], p['src'], p['lat'],
-                         p['lon'], p['dt'].isoformat() if p['dt'] else "", "OK"))
+            rows.append((p['kname'], p['src'], p['lat'], p['lon'], p['dt'].isoformat() if p['dt'] else "", "OK"))
         for s in skipped:
             rows.append(("", s, "", "", "", "NO_GPS"))
+        for nf in nonfiles:
+            rows.append(("", nf, "", "", "", "NON_IMAGE"))
         with open(csv_path, "w", newline="", encoding="utf-8") as cf:
             w = csv.writer(cf)
             w.writerow(("kname", "source_path", "lat", "lon", "datetime", "status"))
@@ -195,9 +194,17 @@ def main():
         print("KMZ created:", out_kmz)
         print("CSV report:", csv_path)
         if skipped:
-            print("Copied", len(skipped), "non-GPS images to:", ng)
+            print("Copied", len(skipped), "non-GPS images to:", no_gps_dir)
+        if nonfiles:
+            print("Copied", len(nonfiles), "non-image files to:", non_file_dir)
     finally:
-        shutil.rmtree(tmp)
-        shutil.rmtree(convert_dir)
+        try:
+            shutil.rmtree(tmp)
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(convert_dir)
+        except Exception:
+            pass
 if __name__ == "__main__":
     main()
