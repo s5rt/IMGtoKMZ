@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# python3 create.py IMAGEDIR [OUTPUT.kmz] [--tour]
+# python3 create.py ./photos/ kmz/photo-marks.kmz
 import json, os, shutil, subprocess, sys, tempfile, zipfile, csv
 from datetime import datetime
 from xml.sax.saxutils import escape
@@ -37,11 +37,10 @@ def parse_dt(dt_str, src):
         return datetime.fromisoformat(dt_str)
     except Exception:
         return None
-def make_kml(placemarks, doc_name, include_tour):
+def make_kml(placemarks, doc_name):
     icon_url = "http://maps.google.com/mapfiles/kml/shapes/donut.png"
     hdr = f'''<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2"
-     xmlns:gx="http://www.google.com/kml/ext/2.2">
+<kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
     <name>{escape(doc_name)}</name>
     <open>1</open>
@@ -57,7 +56,7 @@ def make_kml(placemarks, doc_name, include_tour):
     body = ""
     for p in placemarks:
         coords = f"{p['lon']},{p['lat']}"
-        if p['alt'] is not None:
+        if p.get('alt') is not None:
             coords += f",{p['alt']}"
         body += f'''
     <Placemark>
@@ -67,43 +66,14 @@ def make_kml(placemarks, doc_name, include_tour):
       <Point><coordinates>{coords}</coordinates></Point>
     </Placemark>
 '''
-    tour = ""
-    if include_tour:
-        seq = sorted(placemarks, key=lambda x: x['dt'] or datetime.utcfromtimestamp(0))
-        playlist = ""
-        for p in seq:
-            lat, lon, alt = p['lat'], p['lon'], p['alt'] or 0
-            playlist += f'''
-      <gx:FlyTo>
-        <gx:duration>3</gx:duration>
-        <LookAt>
-          <longitude>{lon}</longitude>
-          <latitude>{lat}</latitude>
-          <altitude>{alt}</altitude>
-          <heading>0</heading>
-          <tilt>45</tilt>
-          <range>200</range>
-          <altitudeMode>relativeToGround</altitudeMode>
-        </LookAt>
-      </gx:FlyTo>
-'''
-        tour = f'''
-    <gx:Tour>
-      <name>Photo Tour</name>
-      <gx:Playlist>
-{playlist}
-      </gx:Playlist>
-    </gx:Tour>
-'''
-    return hdr + body + tour + "\n  </Document>\n</kml>\n"
+    return hdr + body + "\n  </Document>\n</kml>\n"
 def main():
     args = sys.argv
     if len(args) < 2:
-        print("Usage: python3 create.py IMAGEDIR [OUTPUT.kmz] [--tour]")
+        print("Usage: python3 create.py IMAGEDIR [OUTPUT.kmz]")
         sys.exit(1)
     image_dir = args[1]
     out_kmz = args[2] if len(args) > 2 and not args[2].startswith("--") else "images.kmz"
-    include_tour = ("--tour" in args)
     if not os.path.isdir(image_dir):
         print("Error: directory not found:", image_dir)
         sys.exit(1)
@@ -113,7 +83,7 @@ def main():
     try:
         raw_list = run_exiftool_json(image_dir)
         items = []
-        skipped = []
+        nongeo = []
         nonfiles = []
         for item in raw_list:
             src = item.get("SourceFile") or item.get("FileName")
@@ -128,51 +98,49 @@ def main():
                 continue
             norm = normalize_image(candidate, convert_dir)
             gpslat = item.get("GPSLatitude"); gpslon = item.get("GPSLongitude")
+            dt = parse_dt(item.get("DateTimeOriginal"), norm)
             if gpslat is None or gpslon is None:
-                skipped.append(norm)
+                nongeo.append({"src": norm, "dt": dt})
                 continue
             try:
                 lat = float(gpslat); lon = float(gpslon)
             except Exception:
-                skipped.append(norm)
+                nongeo.append({"src": norm, "dt": dt})
                 continue
             alt = item.get("GPSAltitude"); alt_val = float(alt) if alt is not None else None
-            dt = parse_dt(item.get("DateTimeOriginal"), norm)
             items.append({"src": norm, "lon": lon, "lat": lat, "alt": alt_val, "dt": dt})
-        if not items and not skipped:
-            print("No images found.")
-            sys.exit(1)
         items.sort(key=lambda x: (x['dt'] is None, x['dt'] or datetime.utcfromtimestamp(0)))
         for i, p in enumerate(items, start=1):
             p['kname'] = f"p{i}"
         kml_items = list(reversed(items))
+        files_geo_dir = os.path.join(os.path.dirname(out_kmz) or ".", "files_geo")
+        files_nongeo_dir = os.path.join(os.path.dirname(out_kmz) or ".", "files_nongeo")
+        files_nonimg_dir = os.path.join(os.path.dirname(out_kmz) or ".", "files_nonimg")
+        os.makedirs(files_geo_dir, exist_ok=True)
+        os.makedirs(files_nongeo_dir, exist_ok=True)
+        os.makedirs(files_nonimg_dir, exist_ok=True)
         files_dir = os.path.join(tmp, "files")
         os.makedirs(files_dir, exist_ok=True)
         for p in items:
             dst = os.path.join(files_dir, os.path.basename(p['src']))
             shutil.copy2(p['src'], dst)
             p['kimg'] = "files/" + os.path.basename(p['src'])
-        kml_text = make_kml(kml_items, os.path.splitext(os.path.basename(out_kmz))[0], include_tour)
+            shutil.copy2(p['src'], os.path.join(files_geo_dir, os.path.basename(p['src'])))
+        for ng in nongeo:
+            srcpath = ng['src']
+            shutil.copy2(srcpath, os.path.join(files_nongeo_dir, os.path.basename(srcpath)))
+        for nf in nonfiles:
+            if os.path.exists(nf):
+                try:
+                    shutil.copy2(nf, os.path.join(files_nonimg_dir, os.path.basename(nf)))
+                except Exception:
+                    pass
+        kml_text = make_kml(kml_items, os.path.splitext(os.path.basename(out_kmz))[0])
         kml_path = os.path.join(tmp, "doc.kml")
         with open(kml_path, "w", encoding="utf-8") as f:
             f.write(kml_text)
         out_dir = os.path.dirname(out_kmz) or "."
         os.makedirs(out_dir, exist_ok=True)
-        no_gps_dir = os.path.join(out_dir, "no_gps")
-        if skipped:
-            os.makedirs(no_gps_dir, exist_ok=True)
-            for s in skipped:
-                if os.path.exists(s):
-                    shutil.copy2(s, os.path.join(no_gps_dir, os.path.basename(s)))
-        non_file_dir = os.path.join(out_dir, "non_file")
-        if nonfiles:
-            os.makedirs(non_file_dir, exist_ok=True)
-            for nf in nonfiles:
-                if os.path.exists(nf):
-                    try:
-                        shutil.copy2(nf, os.path.join(non_file_dir, os.path.basename(nf)))
-                    except Exception:
-                        pass
         with zipfile.ZipFile(out_kmz, "w", zipfile.ZIP_DEFLATED) as kmz:
             kmz.write(kml_path, arcname="doc.kml")
             for root, _, files in os.walk(files_dir):
@@ -181,22 +149,28 @@ def main():
                     kmz.write(full, arcname=os.path.relpath(full, tmp))
         csv_path = os.path.join(out_dir, os.path.splitext(os.path.basename(out_kmz))[0] + "_report.csv")
         rows = []
+        sl = 1
         for p in items:
-            rows.append((p['kname'], p['src'], p['lat'], p['lon'], p['dt'].isoformat() if p['dt'] else "", "OK"))
-        for s in skipped:
-            rows.append(("", s, "", "", "", "NO_GPS"))
+            dtstr = p['dt'].isoformat() if p['dt'] else ""
+            rows.append((sl, os.path.basename(p['src']), dtstr, p['lat'], p['lon'], "OK"))
+            sl += 1
+        for ng in nongeo:
+            dtstr = ng['dt'].isoformat() if ng['dt'] else ""
+            rows.append((sl, os.path.basename(ng['src']), dtstr, "", "", "NO_GPS"))
+            sl += 1
         for nf in nonfiles:
-            rows.append(("", nf, "", "", "", "NON_IMAGE"))
+            rows.append((sl, os.path.basename(nf), "", "", "", "NON_IMAGE"))
+            sl += 1
         with open(csv_path, "w", newline="", encoding="utf-8") as cf:
             w = csv.writer(cf)
-            w.writerow(("kname", "source_path", "lat", "lon", "datetime", "status"))
-            w.writerows(rows)
+            w.writerow(("slno", "filename", "datetime", "lat", "long", "status"))
+            for r in rows:
+                w.writerow(r)
         print("KMZ created:", out_kmz)
         print("CSV report:", csv_path)
-        if skipped:
-            print("Copied", len(skipped), "non-GPS images to:", no_gps_dir)
-        if nonfiles:
-            print("Copied", len(nonfiles), "non-image files to:", non_file_dir)
+        print("Files with geo (copied):", files_geo_dir)
+        print("Files without geo (copied):", files_nongeo_dir)
+        print("Non-image files (copied):", files_nonimg_dir)
     finally:
         try:
             shutil.rmtree(tmp)
