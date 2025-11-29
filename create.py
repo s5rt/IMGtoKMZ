@@ -119,7 +119,7 @@ def main():
     items.sort(key=lambda x: (x['dt'] is None, x['dt'] or datetime.utcfromtimestamp(0)))
     for idx, it in enumerate(items, start=1):
         it['kname'] = f"p{idx}"
-    kml_text = make_kml(items)
+    kml_text = make_kml(list(reversed(items)))
     tmp = tempfile.mkdtemp(prefix="kmz_")
     try:
         files_dir = os.path.join(tmp, "files")
