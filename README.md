@@ -78,7 +78,7 @@ After running you'll see:
     ```
 - Very large KMZ: embedding many full-resolution images will produce a big KMZ. Consider generating thumbnails (script can be modified to create thumbnails instead of embedding originals).
 # License & attribution
-Use this script freely. Attribution appreciated but not required.
+Use this script freely. Attribution appreciated but not required..
 
 # Example quick checklist
 - Install exiftool: ```brew install exiftool```
